@@ -1,0 +1,295 @@
+@* RagChat.razor *@
+@* Componente Blazor per chat RAG *@
+@*
+   Uso:
+   1. Copia questo file in Pages/ o Components/
+   2. Configura RagApiClient in Program.cs
+   3. Naviga a /rag-chat
+*@
+
+@page "/rag-chat"
+@using DataPizzaRouge.Client
+@inject RagApiClient RagClient
+
+<PageTitle>RAG Chat</PageTitle>
+
+<div class="container mt-4">
+    <div class="row">
+        <div class="col-12">
+            <h2>Chat RAG - DataPizzaRouge</h2>
+            <hr />
+        </div>
+    </div>
+
+    @* Collection Selector *@
+    <div class="row mb-3">
+        <div class="col-md-6">
+            <label class="form-label">Collection:</label>
+            <select class="form-select" @bind="selectedCollection" disabled="@isLoading">
+                <option value="">Seleziona collection...</option>
+                @foreach (var coll in collections)
+                {
+                    <option value="@coll">@coll</option>
+                }
+            </select>
+        </div>
+        <div class="col-md-6 d-flex align-items-end">
+            <button class="btn btn-secondary" @onclick="LoadCollections" disabled="@isLoading">
+                <i class="bi bi-arrow-clockwise"></i> Ricarica
+            </button>
+            @if (!string.IsNullOrEmpty(selectedCollection))
+            {
+                <button class="btn btn-info ms-2" @onclick="LoadCollectionInfo" disabled="@isLoading">
+                    <i class="bi bi-info-circle"></i> Info
+                </button>
+            }
+        </div>
+    </div>
+
+    @* Collection Info *@
+    @if (collectionInfo != null)
+    {
+        <div class="alert alert-info">
+            <strong>@collectionInfo.Name</strong><br />
+            Documenti: @collectionInfo.PointsCount |
+            Vector Size: @collectionInfo.VectorSize |
+            Status: @collectionInfo.Status
+        </div>
+    }
+
+    @* Chat Messages *@
+    <div class="row">
+        <div class="col-12">
+            <div class="card mb-3" style="height: 400px; overflow-y: auto;" @ref="chatContainer">
+                <div class="card-body">
+                    @if (!messages.Any())
+                    {
+                        <p class="text-muted text-center mt-5">
+                            <i class="bi bi-chat-dots" style="font-size: 3rem;"></i><br />
+                            Inizia una conversazione selezionando una collection e facendo una domanda.
+                        </p>
+                    }
+                    else
+                    {
+                        @foreach (var msg in messages)
+                        {
+                            <div class="mb-3 @(msg.IsUser ? "text-end" : "")">
+                                <div class="d-inline-block text-start" style="max-width: 80%;">
+                                    <div class="badge bg-@(msg.IsUser ? "primary" : "secondary") mb-1">
+                                        @(msg.IsUser ? "Tu" : "Assistente")
+                                    </div>
+                                    <div class="card @(msg.IsUser ? "bg-primary text-white" : "")">
+                                        <div class="card-body">
+                                            @((MarkupString)msg.Content.Replace("\n", "<br />"))
+                                        </div>
+                                    </div>
+                                    @if (!msg.IsUser && !string.IsNullOrEmpty(msg.Sources))
+                                    {
+                                        <small class="text-muted">
+                                            <details>
+                                                <summary style="cursor: pointer;">📚 Fonti (@msg.NumResults documenti)</summary>
+                                                <div class="mt-2">
+                                                    @((MarkupString)msg.Sources.Replace("\n", "<br />"))
+                                                </div>
+                                            </details>
+                                        </small>
+                                    }
+                                    <small class="text-muted">@msg.Timestamp.ToString("HH:mm:ss")</small>
+                                </div>
+                            </div>
+                        }
+                    }
+
+                    @if (isLoading)
+                    {
+                        <div class="text-center">
+                            <div class="spinner-border text-primary" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                            <p class="text-muted mt-2">Generazione risposta...</p>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* Input Area *@
+    <div class="row">
+        <div class="col-12">
+            <div class="input-group">
+                <input type="text"
+                       class="form-control"
+                       placeholder="Fai una domanda..."
+                       @bind="userInput"
+                       @bind:event="oninput"
+                       @onkeydown="HandleKeyDown"
+                       disabled="@(isLoading || string.IsNullOrEmpty(selectedCollection))" />
+                <button class="btn btn-primary"
+                        @onclick="SendMessage"
+                        disabled="@(isLoading || string.IsNullOrEmpty(selectedCollection) || string.IsNullOrWhiteSpace(userInput))">
+                    <i class="bi bi-send"></i> Invia
+                </button>
+                <button class="btn btn-outline-secondary" @onclick="ClearChat" disabled="@isLoading">
+                    <i class="bi bi-trash"></i> Pulisci
+                </button>
+            </div>
+        </div>
+    </div>
+
+    @* Error Display *@
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger alert-dismissible fade show mt-3" role="alert">
+            <strong>Errore:</strong> @errorMessage
+            <button type="button" class="btn-close" @onclick="() => errorMessage = null"></button>
+        </div>
+    }
+</div>
+
+@code {
+    // State
+    private List<string> collections = new();
+    private string selectedCollection = string.Empty;
+    private CollectionInfo? collectionInfo;
+    private string userInput = string.Empty;
+    private List<ChatMessage> messages = new();
+    private bool isLoading = false;
+    private string? errorMessage;
+    private ElementReference chatContainer;
+
+    // Models
+    private class ChatMessage
+    {
+        public string Content { get; set; } = string.Empty;
+        public bool IsUser { get; set; }
+        public DateTime Timestamp { get; set; } = DateTime.Now;
+        public string? Sources { get; set; }
+        public int NumResults { get; set; }
+    }
+
+    // Lifecycle
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadCollections();
+    }
+
+    // Methods
+    private async Task LoadCollections()
+    {
+        try
+        {
+            isLoading = true;
+            errorMessage = null;
+            collections = await RagClient.GetCollectionsAsync();
+
+            // Auto-select se c'è solo una collection
+            if (collections.Count == 1)
+            {
+                selectedCollection = collections[0];
+                await LoadCollectionInfo();
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Errore caricando collection: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadCollectionInfo()
+    {
+        if (string.IsNullOrEmpty(selectedCollection))
+            return;
+
+        try
+        {
+            isLoading = true;
+            errorMessage = null;
+            collectionInfo = await RagClient.GetCollectionInfoAsync(selectedCollection);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Errore caricando info collection: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(userInput) || string.IsNullOrEmpty(selectedCollection))
+            return;
+
+        try
+        {
+            isLoading = true;
+            errorMessage = null;
+
+            // Add user message
+            var userMessage = new ChatMessage
+            {
+                Content = userInput,
+                IsUser = true,
+                Timestamp = DateTime.Now
+            };
+            messages.Add(userMessage);
+
+            var query = userInput;
+            userInput = string.Empty;
+
+            // Scroll to bottom
+            StateHasChanged();
+            await Task.Delay(100);
+
+            // Call API
+            var response = await RagClient.QueryAsync(
+                collection: selectedCollection,
+                query: query,
+                topK: 5,
+                includeSources: true,
+                includeHistory: false
+            );
+
+            // Add assistant message
+            var assistantMessage = new ChatMessage
+            {
+                Content = response.Answer,
+                IsUser = false,
+                Timestamp = DateTime.Now,
+                Sources = response.Sources,
+                NumResults = response.NumResults
+            };
+            messages.Add(assistantMessage);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Errore durante query: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+        {
+            await SendMessage();
+        }
+    }
+
+    private void ClearChat()
+    {
+        messages.Clear();
+        collectionInfo = null;
+        errorMessage = null;
+    }
+}

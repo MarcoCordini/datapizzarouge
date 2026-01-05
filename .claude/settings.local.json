@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Bash(dir /s /b \"D:\\\\Almapro-tfs\\\\Febo-Gemelli\\\\datapizzarouge\")",
+      "Bash(pip show:*)",
+      "WebSearch",
+      "Bash(pip install:*)",
+      "Bash(move crawlerscrapy.cfg scrapy.cfg)",
+      "Bash(python:*)",
+      "Bash(findstr:*)",
+      "Bash(cat:*)"
+    ]
+  }
+}
