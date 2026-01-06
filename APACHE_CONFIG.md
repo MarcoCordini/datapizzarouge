@@ -1,737 +1,178 @@
-# Configurazione Apache - DataPizzaRouge API
+# Configurazione Apache per DataPizzaRouge API
 
-Guida per usare Apache come reverse proxy per l'API FastAPI.
+Questa guida spiega come configurare Apache come reverse proxy per pubblicare l'API su:
+**https://gemellidigitali.almapro.it/apirag**
 
----
+## 📋 Prerequisiti
 
-## 🎯 Architettura
+- Apache2 installato
+- Sito `gemellidigitali.almapro.it` già configurato con HTTPS
+- DataPizzaRouge service attivo su porta 8000
 
-```
-Internet
-   ↓
-Apache (porta 80/443) - Reverse Proxy + SSL
-   ↓
-Gunicorn (porta 8000) - Process Manager
-   ↓
-Uvicorn Workers (4-16) - FastAPI App
-```
-
----
-
-## 🔧 Prerequisiti Apache
-
-### Moduli Richiesti
-
-Apache deve avere questi moduli attivi:
+## 🔧 Step 1: Abilita moduli Apache necessari
 
 ```bash
-# Linux (Ubuntu/Debian)
 sudo a2enmod proxy
 sudo a2enmod proxy_http
-sudo a2enmod proxy_wstunnel  # Per WebSocket/streaming
-sudo a2enmod ssl
+sudo a2enmod proxy_wstunnel
 sudo a2enmod headers
 sudo a2enmod rewrite
-
-# Restart Apache
-sudo systemctl restart apache2
 ```
+
+## 🔧 Step 2: Trova il file di configurazione del VirtualHost
+
+Individua il file di configurazione per `gemellidigitali.almapro.it`:
 
 ```bash
-# Windows (XAMPP/Apache)
-# Modifica httpd.conf, decommmenta queste righe:
-LoadModule proxy_module modules/mod_proxy.so
-LoadModule proxy_http_module modules/mod_proxy_http.so
-LoadModule proxy_wstunnel_module modules/mod_proxy_wstunnel.so
-LoadModule ssl_module modules/mod_ssl.so
-LoadModule headers_module modules/mod_headers.so
-LoadModule rewrite_module modules/mod_rewrite.so
-
-# Restart Apache
-# Da XAMPP Control Panel → Stop/Start Apache
+# Cerca il file
+sudo grep -r "gemellidigitali.almapro.it" /etc/apache2/sites-enabled/
+sudo grep -r "gemellidigitali.almapro.it" /etc/apache2/sites-available/
 ```
 
-### Verifica Moduli Attivi
+Probabilmente sarà in uno di questi:
+- `/etc/apache2/sites-enabled/gemellidigitali.conf`
+- `/etc/apache2/sites-enabled/000-default-le-ssl.conf` (se Let's Encrypt)
+- `/etc/apache2/sites-available/gemellidigitali-ssl.conf`
+
+## 🔧 Step 3: Modifica il VirtualHost
+
+Apri il file del VirtualHost HTTPS (porta 443):
 
 ```bash
-# Linux
-apache2ctl -M | grep proxy
-
-# Output atteso:
-# proxy_module (shared)
-# proxy_http_module (shared)
-# proxy_wstunnel_module (shared)
+sudo nano /etc/apache2/sites-enabled/[nome-file].conf
 ```
 
-```bash
-# Windows
-httpd.exe -M | findstr proxy
-```
-
----
-
-## 🌐 Configurazione Apache - VirtualHost
-
-### Opzione 1: Subdomain API (api.tuodominio.com)
-
-**Linux: `/etc/apache2/sites-available/datapizzarouge-api.conf`**
-**Windows: `C:\xampp\apache\conf\extra\httpd-vhosts.conf`** (aggiungi alla fine)
-
-```apache
-# HTTP → HTTPS Redirect
-<VirtualHost *:80>
-    ServerName api.tuodominio.com
-    ServerAdmin admin@tuodominio.com
-
-    # Redirect a HTTPS
-    RewriteEngine On
-    RewriteCond %{HTTPS} off
-    RewriteRule ^(.*)$ https://%{HTTP_HOST}$1 [R=301,L]
-
-    ErrorLog ${APACHE_LOG_DIR}/datapizzarouge_error.log
-    CustomLog ${APACHE_LOG_DIR}/datapizzarouge_access.log combined
-</VirtualHost>
-
-# HTTPS VirtualHost
-<VirtualHost *:443>
-    ServerName api.tuodominio.com
-    ServerAdmin admin@tuodominio.com
-
-    # SSL Configuration
-    SSLEngine on
-    SSLCertificateFile /etc/letsencrypt/live/api.tuodominio.com/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/api.tuodominio.com/privkey.pem
-
-    # SSL Security (Mozilla Modern)
-    SSLProtocol all -SSLv3 -TLSv1 -TLSv1.1
-    SSLCipherSuite ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384
-    SSLHonorCipherOrder off
-    SSLSessionTickets off
-
-    # HSTS Header
-    Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
-
-    # Security Headers
-    Header always set X-Content-Type-Options "nosniff"
-    Header always set X-Frame-Options "DENY"
-    Header always set X-XSS-Protection "1; mode=block"
-    Header always set Referrer-Policy "strict-origin-when-cross-origin"
-
-    # Remove server signature
-    ServerSignature Off
-    Header unset Server
-
-    # Logging
-    ErrorLog ${APACHE_LOG_DIR}/datapizzarouge_error.log
-    CustomLog ${APACHE_LOG_DIR}/datapizzarouge_access.log combined
-
-    # Proxy Configuration
-    ProxyPreserveHost On
-    ProxyRequests Off
-    ProxyTimeout 120
-
-    # Reverse Proxy to Gunicorn (localhost:8000)
-    ProxyPass / http://127.0.0.1:8000/
-    ProxyPassReverse / http://127.0.0.1:8000/
-
-    # WebSocket Support (per streaming se implementato)
-    RewriteEngine On
-    RewriteCond %{HTTP:Upgrade} =websocket [NC]
-    RewriteRule /(.*)           ws://127.0.0.1:8000/$1 [P,L]
-    RewriteCond %{HTTP:Upgrade} !=websocket [NC]
-    RewriteRule /(.*)           http://127.0.0.1:8000/$1 [P,L]
-
-    # Headers forwarding
-    RequestHeader set X-Forwarded-Proto "https"
-    RequestHeader set X-Forwarded-Port "443"
-    RequestHeader set X-Real-IP %{REMOTE_ADDR}s
-
-    # Timeout per query RAG lunghe
-    ProxyTimeout 120
-
-    # Disable buffering per streaming
-    SetEnv proxy-nokeepalive 1
-    SetEnv proxy-sendchunked 1
-
-    # Health check (no logging)
-    <Location /health>
-        SetEnv no-log 1
-    </Location>
-</VirtualHost>
-```
-
-### Opzione 2: Subdirectory (tuodominio.com/api)
-
-Se vuoi l'API sotto `/api` invece di subdomain:
+**All'interno del blocco `<VirtualHost *:443>`**, aggiungi la configurazione per `/apirag`:
 
 ```apache
 <VirtualHost *:443>
-    ServerName tuodominio.com
-    DocumentRoot /var/www/tuodominio
+    ServerName gemellidigitali.almapro.it
 
-    SSLEngine on
-    SSLCertificateFile /path/to/cert.pem
-    SSLCertificateKeyFile /path/to/key.pem
+    # ... altre configurazioni esistenti ...
 
-    # ... altri contenuti del sito ...
-
-    # API FastAPI su /api
-    <Location /api>
-        ProxyPreserveHost On
-        ProxyPass http://127.0.0.1:8000
+    # === DataPizzaRouge API Reverse Proxy ===
+    <Location /apirag>
+        # Reverse proxy verso Gunicorn con timeout di 300 secondi
+        ProxyPass http://127.0.0.1:8000 timeout=300
         ProxyPassReverse http://127.0.0.1:8000
 
-        # Timeout
-        ProxyTimeout 120
-
-        # Headers
+        # Preserva headers per FastAPI
+        ProxyPreserveHost On
         RequestHeader set X-Forwarded-Proto "https"
-        RequestHeader set X-Forwarded-Prefix "/api"
+        RequestHeader set X-Forwarded-Prefix "/apirag"
     </Location>
 
-    # Health check
-    <Location /api/health>
-        ProxyPass http://127.0.0.1:8000/health
-        ProxyPassReverse http://127.0.0.1:8000/health
-        SetEnv no-log 1
-    </Location>
+    # ... resto della configurazione esistente ...
 </VirtualHost>
 ```
 
-**IMPORTANTE**: Se uso `/api`, devi modificare FastAPI:
+### Opzione Alternativa: Include file esterno
 
-```python
-# api.py
-app = FastAPI(
-    title="DataPizzaRouge API",
-    root_path="/api"  # ← Aggiungi questo
-)
+Se preferisci mantenere la configurazione separata:
+
+```apache
+<VirtualHost *:443>
+    ServerName gemellidigitali.almapro.it
+
+    # ... altre configurazioni ...
+
+    # Include DataPizzaRouge API config
+    Include /home/administrator/rag_tools/datapizzarouge/apache-apirag.conf
+
+    # ... resto della configurazione ...
+</VirtualHost>
 ```
 
----
-
-## 🔒 SSL/TLS con Let's Encrypt
-
-### Linux (Certbot)
+## 🔧 Step 4: Verifica la configurazione
 
 ```bash
-# Installa Certbot per Apache
-sudo apt install certbot python3-certbot-apache
-
-# Ottieni certificato (automatico)
-sudo certbot --apache -d api.tuodominio.com
-
-# Certbot modifica automaticamente la config Apache!
-
-# Test auto-renewal
-sudo certbot renew --dry-run
-
-# Auto-renewal è già configurato in cron
-```
-
-### Windows (Manuale)
-
-**Opzione 1: Win-ACME** (Let's Encrypt automatico per Windows)
-
-```powershell
-# Download Win-ACME
-# https://www.win-acme.com/
-
-# Esegui wacs.exe
-# Segui wizard interattivo per ottenere certificato
-```
-
-**Opzione 2: Certificato Self-Signed** (solo sviluppo/test)
-
-```bash
-# Genera certificato self-signed
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout api.key \
-  -out api.crt \
-  -subj "/CN=api.tuodominio.com"
-
-# Usa in Apache config:
-SSLCertificateFile "C:/path/to/api.crt"
-SSLCertificateKeyFile "C:/path/to/api.key"
-```
-
----
-
-## 🚀 Avvio Backend (Gunicorn)
-
-### Linux
-
-**Crea systemd service** (come in DEPLOY_PRODUZIONE.md):
-
-```bash
-sudo systemctl start datapizzarouge
-sudo systemctl enable datapizzarouge
-```
-
-### Windows
-
-**Opzione 1: NSSM** (Non-Sucking Service Manager)
-
-```powershell
-# Download NSSM
-# https://nssm.cc/download
-
-# Install as Windows Service
-nssm install DataPizzaRouge "C:\Python313\python.exe" ^
-  "-m" "gunicorn" "api:app" ^
-  "-c" "gunicorn_config.py"
-
-# Set working directory
-nssm set DataPizzaRouge AppDirectory "D:\Almapro-tfs\Febo-Gemelli\datapizzarouge"
-
-# Set environment file
-nssm set DataPizzaRouge AppEnvironmentExtra :EnvironmentFile=.env
-
-# Start service
-nssm start DataPizzaRouge
-
-# Stop service
-nssm stop DataPizzaRouge
-
-# Remove service
-nssm remove DataPizzaRouge confirm
-```
-
-**Opzione 2: Script BAT con Task Scheduler**
-
-**Crea `start_backend.bat`**:
-
-```batch
-@echo off
-cd /d D:\Almapro-tfs\Febo-Gemelli\datapizzarouge
-
-REM Verifica Python
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo Python not found!
-    exit /b 1
-)
-
-REM Avvia Gunicorn
-python -m gunicorn api:app ^
-  --workers 4 ^
-  --worker-class uvicorn.workers.UvicornWorker ^
-  --bind 127.0.0.1:8000 ^
-  --timeout 120 ^
-  --access-logfile logs\access.log ^
-  --error-logfile logs\error.log
-```
-
-**Crea Task Scheduler**:
-1. Apri "Task Scheduler"
-2. Create Task → General:
-   - Nome: "DataPizzaRouge API"
-   - "Run whether user is logged on or not"
-   - "Run with highest privileges"
-3. Triggers → New:
-   - Begin: "At startup"
-4. Actions → New:
-   - Action: "Start a program"
-   - Program: `C:\Windows\System32\cmd.exe`
-   - Arguments: `/c D:\Almapro-tfs\Febo-Gemelli\datapizzarouge\start_backend.bat`
-5. Settings:
-   - "Allow task to be run on demand"
-   - "If task fails, restart every: 1 minute"
-
----
-
-## ✅ Attivazione Configurazione
-
-### Linux
-
-```bash
-# Abilita sito
-sudo a2ensite datapizzarouge-api.conf
-
-# Test configurazione
+# Test syntax
 sudo apache2ctl configtest
 
-# Restart Apache
+# Dovrebbe restituire: Syntax OK
+```
+
+Se ci sono errori, correggili prima di procedere.
+
+## 🔧 Step 5: Riavvia Apache
+
+```bash
 sudo systemctl restart apache2
 
 # Verifica status
 sudo systemctl status apache2
-
-# Verifica logs
-sudo tail -f /var/log/apache2/datapizzarouge_error.log
 ```
 
-### Windows
+## 🔧 Step 6: Verifica il servizio DataPizzaRouge
+
+Assicurati che il servizio sia attivo:
 
 ```bash
-# Test configurazione
-httpd.exe -t
+sudo systemctl status datapizzarouge
 
-# Restart Apache
-# Da XAMPP Control Panel → Stop/Start Apache
-
-# Verifica logs
-notepad C:\xampp\apache\logs\error.log
+# Dovrebbe mostrare: Active: active (running)
 ```
 
----
+## 🧪 Step 7: Test dell'API
 
-## 🧪 Test Configurazione
-
-### 1. Test Backend (Gunicorn)
+### Test da riga di comando:
 
 ```bash
-# Verifica che Gunicorn sia in ascolto su porta 8000
-curl http://127.0.0.1:8000/health
+# Health check
+curl https://gemellidigitali.almapro.it/apirag/health
 
-# Windows PowerShell
-Invoke-WebRequest -Uri http://127.0.0.1:8000/health
+# Root endpoint
+curl https://gemellidigitali.almapro.it/apirag/
+
+# Lista collections
+curl https://gemellidigitali.almapro.it/apirag/api/collections
 ```
 
-**Output atteso**:
-```json
-{
-  "status": "healthy",
-  "qdrant_connected": true,
-  "openai_configured": true,
-  "anthropic_configured": true
-}
-```
+### Test dal browser:
 
-### 2. Test Apache Proxy (HTTP)
+Apri in un browser:
+- **API Root**: https://gemellidigitali.almapro.it/apirag/
+- **Documentazione interattiva**: https://gemellidigitali.almapro.it/apirag/docs
+- **Health check**: https://gemellidigitali.almapro.it/apirag/health
 
-```bash
-curl http://api.tuodominio.com/health
+## 📊 Monitoring e Log
 
-# O se locale senza dominio
-curl -H "Host: api.tuodominio.com" http://localhost/health
-```
+### Log Apache:
 
-### 3. Test HTTPS
-
-```bash
-curl https://api.tuodominio.com/health
-
-# Windows PowerShell
-Invoke-RestMethod -Uri https://api.tuodominio.com/health
-```
-
-### 4. Test Query Completa
-
-```bash
-curl -X POST https://api.tuodominio.com/api/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "collection": "test_latest",
-    "query": "test query",
-    "top_k": 5
-  }'
-```
-
----
-
-## 🔥 Firewall Configuration
-
-### Linux (UFW)
-
-```bash
-# Abilita firewall
-sudo ufw enable
-
-# Permetti Apache
-sudo ufw allow 'Apache Full'
-
-# O manualmente
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-
-# SSH (se remoto)
-sudo ufw allow 22/tcp
-
-# Verifica
-sudo ufw status
-```
-
-### Windows (Firewall)
-
-```powershell
-# Permetti Apache in entrata
-New-NetFirewallRule -DisplayName "Apache HTTP" -Direction Inbound -LocalPort 80 -Protocol TCP -Action Allow
-New-NetFirewallRule -DisplayName "Apache HTTPS" -Direction Inbound -LocalPort 443 -Protocol TCP -Action Allow
-
-# Verifica regole
-Get-NetFirewallRule | Where-Object {$_.DisplayName -like "*Apache*"}
-```
-
----
-
-## ⚡ Performance Tuning Apache
-
-### Moduli Performance
-
-```bash
-# Linux - Abilita MPM Event (più performante)
-sudo a2dismod mpm_prefork
-sudo a2enmod mpm_event
-
-# Restart
-sudo systemctl restart apache2
-```
-
-### Apache MPM Event Configuration
-
-**Modifica `/etc/apache2/mods-available/mpm_event.conf`**:
-
-```apache
-<IfModule mpm_event_module>
-    StartServers             2
-    MinSpareThreads          25
-    MaxSpareThreads          75
-    ThreadLimit              64
-    ThreadsPerChild          25
-    MaxRequestWorkers        150
-    MaxConnectionsPerChild   10000
-    KeepAlive On
-    KeepAliveTimeout 5
-    MaxKeepAliveRequests 100
-</IfModule>
-```
-
-### Compression (gzip)
-
-```bash
-# Abilita mod_deflate
-sudo a2enmod deflate
-```
-
-**Aggiungi a VirtualHost**:
-
-```apache
-<IfModule mod_deflate.c>
-    AddOutputFilterByType DEFLATE text/plain
-    AddOutputFilterByType DEFLATE text/html
-    AddOutputFilterByType DEFLATE text/xml
-    AddOutputFilterByType DEFLATE text/css
-    AddOutputFilterByType DEFLATE application/xml
-    AddOutputFilterByType DEFLATE application/json
-    AddOutputFilterByType DEFLATE application/javascript
-</IfModule>
-```
-
-### Caching Headers
-
-```apache
-<IfModule mod_headers.c>
-    # Cache statico (se hai file statici)
-    <FilesMatch "\.(ico|jpg|jpeg|png|gif|css|js|woff|woff2)$">
-        Header set Cache-Control "max-age=2592000, public"
-    </FilesMatch>
-
-    # No cache per API
-    <Location /api>
-        Header set Cache-Control "no-cache, no-store, must-revalidate"
-        Header set Pragma "no-cache"
-        Header set Expires 0
-    </Location>
-</IfModule>
-```
-
----
-
-## 📊 Monitoring e Logs
-
-### Apache Logs
-
-**Linux**:
 ```bash
 # Access log
-sudo tail -f /var/log/apache2/datapizzarouge_access.log
+sudo tail -f /var/log/apache2/access.log
 
 # Error log
-sudo tail -f /var/log/apache2/datapizzarouge_error.log
+sudo tail -f /var/log/apache2/error.log
 
-# Tutte le richieste Apache
-sudo tail -f /var/log/apache2/access.log
+# Filtra solo apirag
+sudo tail -f /var/log/apache2/access.log | grep apirag
 ```
 
-**Windows XAMPP**:
-```bash
-# Logs location
-C:\xampp\apache\logs\access.log
-C:\xampp\apache\logs\error.log
-
-# View in real-time (PowerShell)
-Get-Content C:\xampp\apache\logs\error.log -Wait -Tail 50
-```
-
-### Apache Status Module
+### Log Gunicorn (DataPizzaRouge):
 
 ```bash
-# Abilita mod_status
-sudo a2enmod status
+# Via systemd
+sudo journalctl -u datapizzarouge -f
+
+# File log diretti
+tail -f ~/rag_tools/datapizzarouge/logs/access.log
+tail -f ~/rag_tools/datapizzarouge/logs/error.log
 ```
 
-**Aggiungi a config**:
+## 🔒 Security Considerations
 
-```apache
-<Location /server-status>
-    SetHandler server-status
-    Require ip 127.0.0.1
-    # O per rete interna
-    # Require ip 192.168.1.0/24
-</Location>
-```
+### Rate Limiting (opzionale ma raccomandato):
 
-**Accedi**:
-```
-http://localhost/server-status
-```
-
----
-
-## 🐛 Troubleshooting
-
-### Errore: "503 Service Unavailable"
-
-**Causa**: Apache non riesce a connettersi a Gunicorn (porta 8000)
-
-**Soluzioni**:
+Installa mod_evasive o mod_security per proteggere da abuse:
 
 ```bash
-# 1. Verifica Gunicorn sia in esecuzione
-netstat -tlnp | grep 8000  # Linux
-netstat -an | findstr 8000  # Windows
-
-# 2. Test connessione diretta
-curl http://127.0.0.1:8000/health
-
-# 3. Verifica SELinux (Linux)
-sudo setsebool -P httpd_can_network_connect 1
-
-# 4. Verifica firewall locale non blocchi porta 8000
-```
-
-### Errore: "AH00959: ap_proxy_connect_backend disabling worker"
-
-**Causa**: Timeout connessione
-
-**Soluzione**:
-
-```apache
-# Aumenta timeout in VirtualHost
-ProxyTimeout 300
-Timeout 300
-```
-
-### Errore: "Invalid command 'ProxyPass'"
-
-**Causa**: Modulo proxy non abilitato
-
-**Soluzione**:
-
-```bash
-# Linux
-sudo a2enmod proxy proxy_http
-sudo systemctl restart apache2
-
-# Windows - Verifica in httpd.conf
-LoadModule proxy_module modules/mod_proxy.so
-LoadModule proxy_http_module modules/mod_proxy_http.so
-```
-
-### Gunicorn non parte su Windows
-
-**Causa**: Gunicorn usa fork() non supportato su Windows
-
-**Soluzione**: Usa Waitress (alternativa Windows-friendly)
-
-```bash
-pip install waitress
-```
-
-**Crea `start_waitress.py`**:
-
-```python
-from waitress import serve
-from api import app
-
-if __name__ == "__main__":
-    print("🚀 Starting Waitress server on http://127.0.0.1:8000")
-    serve(
-        app,
-        host="127.0.0.1",
-        port=8000,
-        threads=8,  # Thread pool size
-        channel_timeout=120,
-        connection_limit=1000,
-        cleanup_interval=30,
-    )
-```
-
-**Avvia**:
-
-```bash
-python start_waitress.py
-```
-
-### CORS Issues
-
-Se Blazor frontend ha errori CORS anche con Apache:
-
-**Aggiungi a VirtualHost**:
-
-```apache
-# CORS Headers
-Header always set Access-Control-Allow-Origin "https://tuo-blazor-app.com"
-Header always set Access-Control-Allow-Methods "GET, POST, OPTIONS"
-Header always set Access-Control-Allow-Headers "Content-Type, Authorization"
-Header always set Access-Control-Max-Age "3600"
-
-# Handle preflight OPTIONS
-RewriteEngine On
-RewriteCond %{REQUEST_METHOD} OPTIONS
-RewriteRule ^(.*)$ $1 [R=200,L]
-```
-
----
-
-## 🔐 Security Hardening Apache
-
-### Hide Apache Version
-
-**Modifica `/etc/apache2/conf-enabled/security.conf` (Linux)**:
-
-```apache
-ServerTokens Prod
-ServerSignature Off
-```
-
-**Windows `httpd.conf`**:
-
-```apache
-ServerTokens Prod
-ServerSignature Off
-```
-
-### Disable Unnecessary Methods
-
-```apache
-<Location />
-    <LimitExcept GET POST OPTIONS>
-        Require all denied
-    </LimitExcept>
-</Location>
-```
-
-### Rate Limiting
-
-```bash
-# Abilita mod_evasive (DDoS protection)
-sudo apt install libapache2-mod-evasive
+sudo apt-get install libapache2-mod-evasive
 sudo a2enmod evasive
 ```
 
-**Config `/etc/apache2/mods-enabled/evasive.conf`**:
+Configura in `/etc/apache2/mods-available/evasive.conf`:
 
 ```apache
 <IfModule mod_evasive20.c>
@@ -740,85 +181,157 @@ sudo a2enmod evasive
     DOSSiteCount 100
     DOSPageInterval 1
     DOSSiteInterval 1
-    DOSBlockingPeriod 60
+    DOSBlockingPeriod 10
 </IfModule>
 ```
 
----
+### IP Whitelisting (se necessario):
 
-## 📋 Checklist Deploy Apache
-
-- [ ] **Moduli proxy attivi** (proxy, proxy_http, ssl, headers)
-- [ ] **VirtualHost configurato** (porta 80 e 443)
-- [ ] **SSL/TLS attivo** (Let's Encrypt o certificato)
-- [ ] **Gunicorn/Waitress in esecuzione** (porta 8000)
-- [ ] **Firewall configurato** (80, 443 aperti)
-- [ ] **Security headers** attivi
-- [ ] **CORS configurato** (se serve per Blazor)
-- [ ] **Logs funzionanti** (access + error)
-- [ ] **Health check raggiungibile** (https://api.tuodominio.com/health)
-- [ ] **Test query completo** (POST /api/query)
-
----
-
-## 🎯 Setup Rapido Windows + Apache + XAMPP
-
-### 1. Backend
-
-```bash
-# Installa Waitress
-pip install waitress
-
-# Crea start_waitress.py (vedi sopra)
-
-# Test locale
-python start_waitress.py
-```
-
-### 2. Apache Config
-
-Aggiungi a `C:\xampp\apache\conf\extra\httpd-vhosts.conf`:
+Se vuoi limitare l'accesso solo da certi IP:
 
 ```apache
-<VirtualHost *:80>
-    ServerName localhost
-    DocumentRoot "C:/xampp/htdocs"
-
-    # API Proxy
+<Location /apirag>
+    ProxyPass http://127.0.0.1:8000 timeout=300
+    ProxyPassReverse http://127.0.0.1:8000
     ProxyPreserveHost On
-    ProxyPass /api http://127.0.0.1:8000
-    ProxyPassReverse /api http://127.0.0.1:8000
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Prefix "/apirag"
 
-    ErrorLog "logs/datapizzarouge_error.log"
-    CustomLog "logs/datapizzarouge_access.log" common
+    # Limita accesso
+    Require ip 192.168.1.0/24
+    Require ip 10.0.0.0/8
+    # oppure per permettere a tutti
+    # Require all granted
+</Location>
+```
+
+## 🛠️ Troubleshooting
+
+### Problema: 502 Bad Gateway
+
+```bash
+# Verifica che Gunicorn sia in esecuzione
+sudo systemctl status datapizzarouge
+
+# Verifica che la porta 8000 sia in ascolto
+sudo netstat -tlnp | grep 8000
+# oppure
+sudo ss -tlnp | grep 8000
+
+# Se non in ascolto, riavvia il service
+sudo systemctl restart datapizzarouge
+```
+
+### Problema: 503 Service Unavailable
+
+```bash
+# Controlla i log di Gunicorn
+sudo journalctl -u datapizzarouge -n 50
+
+# Controlla errori Python
+tail -n 50 ~/rag_tools/datapizzarouge/logs/error.log
+```
+
+### Problema: 404 Not Found
+
+```bash
+# Verifica che il path sia corretto
+curl -v https://gemellidigitali.almapro.it/apirag/
+
+# Controlla configurazione Apache
+sudo apache2ctl -S
+
+# Verifica che root_path sia configurato in api.py
+grep "root_path" ~/rag_tools/datapizzarouge/api.py
+```
+
+### Problema: CORS errors
+
+Se vedi errori CORS dal frontend Blazor:
+
+1. Verifica che FastAPI abbia CORS abilitato (già configurato)
+2. Controlla gli headers nelle Developer Tools del browser
+3. Verifica che Apache non stia bloccando gli headers CORS
+
+### Problema: Timeout su richieste lunghe
+
+Se le query RAG vanno in timeout:
+
+```apache
+<Location /apirag>
+    # Aumenta timeout (default 300s = 5 minuti, qui aumentato a 10 minuti)
+    ProxyPass http://127.0.0.1:8000 timeout=600
+    ProxyPassReverse http://127.0.0.1:8000
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Prefix "/apirag"
+</Location>
+```
+
+E in `gunicorn_config.py`:
+
+```python
+timeout = 600  # 10 minuti
+```
+
+## 🔄 Aggiornamenti
+
+Dopo aver modificato il codice dell'API:
+
+```bash
+# 1. Pull modifiche
+cd ~/rag_tools/datapizzarouge
+git pull
+
+# 2. Riavvia il service
+sudo systemctl restart datapizzarouge
+
+# 3. Non serve riavviare Apache (a meno di modifiche alla configurazione)
+
+# 4. Verifica
+curl https://gemellidigitali.almapro.it/apirag/health
+```
+
+## 📝 Configurazione Completa di Riferimento
+
+Esempio di VirtualHost completo:
+
+```apache
+<VirtualHost *:443>
+    ServerName gemellidigitali.almapro.it
+    ServerAdmin admin@almapro.it
+
+    # SSL Configuration (Let's Encrypt)
+    SSLEngine on
+    SSLCertificateFile /etc/letsencrypt/live/gemellidigitali.almapro.it/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/gemellidigitali.almapro.it/privkey.pem
+    Include /etc/letsencrypt/options-ssl-apache.conf
+
+    # Document Root (sito principale)
+    DocumentRoot /var/www/gemellidigitali
+
+    # DataPizzaRouge API Reverse Proxy
+    <Location /apirag>
+        ProxyPass http://127.0.0.1:8000 timeout=300
+        ProxyPassReverse http://127.0.0.1:8000
+        ProxyPreserveHost On
+        RequestHeader set X-Forwarded-Proto "https"
+        RequestHeader set X-Forwarded-Prefix "/apirag"
+    </Location>
+
+    # Log files
+    ErrorLog ${APACHE_LOG_DIR}/gemellidigitali-error.log
+    CustomLog ${APACHE_LOG_DIR}/gemellidigitali-access.log combined
 </VirtualHost>
 ```
 
-### 3. Test
+## ✅ Checklist Finale
 
-```bash
-# Avvia Waitress
-python start_waitress.py
-
-# Avvia Apache (XAMPP Control Panel)
-
-# Test
-curl http://localhost/api/health
-```
-
-**Fatto!** API raggiungibile su `http://localhost/api/` 🎉
-
----
-
-## 📚 Risorse
-
-- **Apache Docs**: https://httpd.apache.org/docs/
-- **mod_proxy**: https://httpd.apache.org/docs/2.4/mod/mod_proxy.html
-- **Let's Encrypt**: https://letsencrypt.org/
-- **Win-ACME**: https://www.win-acme.com/
-- **NSSM**: https://nssm.cc/
-- **Waitress**: https://docs.pylonsproject.org/projects/waitress/
-
----
-
-Ora Apache è configurato perfettamente per DataPizzaRouge! 🚀
+- [ ] Moduli Apache abilitati (proxy, proxy_http, headers)
+- [ ] Configurazione aggiunta al VirtualHost HTTPS
+- [ ] Apache configuration test OK
+- [ ] Apache riavviato
+- [ ] DataPizzaRouge service attivo
+- [ ] Health check funziona: `curl https://gemellidigitali.almapro.it/apirag/health`
+- [ ] Docs accessibili: https://gemellidigitali.almapro.it/apirag/docs
+- [ ] Test query funziona dal Blazor app

@@ -36,6 +36,20 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    root_path="/apirag",  # Path prefix per reverse proxy
+    swagger_ui_parameters={
+        "persistAuthorization": True,
+    },
+    servers=[
+        {
+            "url": "https://gemellidigitali.almapro.it/apirag",
+            "description": "Production server"
+        },
+        {
+            "url": "http://localhost:8000",
+            "description": "Development server"
+        }
+    ]
 )
 
 # CORS - permetti chiamate da Blazor
