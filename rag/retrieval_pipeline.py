@@ -57,6 +57,7 @@ class RetrievalPipeline:
         top_k: Optional[int] = None,
         score_threshold: Optional[float] = None,
         filter_dict: Optional[Dict] = None,
+        filter_by_file: Optional[str] = None,
     ) -> List[Dict]:
         """
         Recupera chunk rilevanti per una query.
@@ -66,6 +67,7 @@ class RetrievalPipeline:
             top_k: Numero di risultati (default: self.top_k)
             score_threshold: Soglia minima di similarità (opzionale)
             filter_dict: Filtri sui metadata (opzionale)
+            filter_by_file: Nome file per filtrare i risultati (es: "Disciplinari_A_B.pdf")
 
         Returns:
             Lista di chunk rilevanti con score
@@ -77,6 +79,13 @@ class RetrievalPipeline:
         top_k = top_k or self.top_k
 
         try:
+            # Aggiungi filtro per file_name se specificato
+            if filter_by_file:
+                if filter_dict is None:
+                    filter_dict = {}
+                filter_dict["file_name"] = filter_by_file
+                logger.info(f"Filtro per file: {filter_by_file}")
+
             # Genera embedding per query
             query_embedding = self._generate_query_embedding(query)
 
@@ -91,11 +100,303 @@ class RetrievalPipeline:
 
             logger.info(f"Trovati {len(results)} risultati per query: {query[:50]}...")
 
+            # Log dei file trovati per debug
+            if results:
+                files_found = set(r.get("metadata", {}).get("file_name", "N/A") for r in results)
+                logger.info(f"File nei risultati: {files_found}")
+
             return results
 
         except Exception as e:
             logger.error(f"Errore durante retrieval: {e}")
             raise
+
+    def retrieve_diverse(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        diversity_threshold: float = 0.7,
+    ) -> List[Dict]:
+        """
+        Recupera risultati diversificati (evita duplicati semantici).
+
+        Args:
+            query: Query dell'utente
+            top_k: Numero di risultati finali
+            diversity_threshold: Soglia di similarità per considerare duplicati
+
+        Returns:
+            Lista di chunk diversificati
+        """
+        # Recupera più risultati del necessario
+        top_k = top_k or self.top_k
+        initial_results = self.retrieve(query, top_k=top_k * 3)
+
+        if not initial_results:
+            return []
+
+        # Seleziona risultati diversificati
+        diverse_results = [initial_results[0]]  # Prendi il primo (più rilevante)
+
+        for result in initial_results[1:]:
+            # Controlla se è sufficientemente diverso dai già selezionati
+            is_diverse = True
+            for selected in diverse_results:
+                # Confronto semplice basato su overlap di testo
+                overlap = self._text_similarity(result["text"], selected["text"])
+                if overlap > diversity_threshold:
+                    is_diverse = False
+                    break
+
+            if is_diverse:
+                diverse_results.append(result)
+
+            if len(diverse_results) >= top_k:
+                break
+
+        logger.info(f"Risultati diversificati: {len(diverse_results)}/{len(initial_results)}")
+        return diverse_results
+
+    def _text_similarity(self, text1: str, text2: str) -> float:
+        """
+        Calcola similarità semplice tra due testi (Jaccard).
+
+        Args:
+            text1: Primo testo
+            text2: Secondo testo
+
+        Returns:
+            Score di similarità (0-1)
+        """
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+
+        if not words1 or not words2:
+            return 0.0
+
+        intersection = len(words1 & words2)
+        union = len(words1 | words2)
+
+        return intersection / union if union > 0 else 0.0
+
+    def retrieve_with_context(
+        self,
+        query: str,
+        top_k: Optional[int] = None,
+        context_window: int = 2,
+        filter_by_file: Optional[str] = None,
+    ) -> List[Dict]:
+        """
+        Recupera risultati con chunk adiacenti per più contesto.
+
+        Args:
+            query: Query dell'utente
+            top_k: Numero di risultati base
+            context_window: Numero di chunk prima/dopo da includere
+            filter_by_file: Filtro per file
+
+        Returns:
+            Lista di risultati con chunk adiacenti
+        """
+        # Recupera risultati base
+        base_results = self.retrieve(
+            query,
+            top_k=top_k,
+            filter_by_file=filter_by_file
+        )
+
+        if not base_results or context_window <= 0:
+            return base_results
+
+        # Per ogni risultato, cerca chunk adiacenti
+        # Nota: questa è una implementazione semplificata
+        # In produzione, dovresti recuperare chunk per chunk_index
+        logger.info(f"Espansione contesto con window={context_window}")
+
+        # Per ora ritorniamo i risultati base
+        # Una implementazione completa richiederebbe:
+        # 1. Salvare chunk_index nei metadata durante ingestion
+        # 2. Query Qdrant per chunk con stesso file_name e chunk_index +/- N
+        return base_results
+
+    def get_file_stats(self, file_name: str) -> Dict:
+        """
+        Ottiene statistiche per un file specifico nella collection.
+
+        Args:
+            file_name: Nome del file
+
+        Returns:
+            Dict con statistiche: total_chunks, avg_chunk_size, etc.
+        """
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+            # Query Qdrant per contare chunk di questo file
+            # Usa scroll per ottenere tutti i chunk del file
+            scroll_result = self.vector_store.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=Filter(
+                    must=[
+                        FieldCondition(
+                            key="file_name",
+                            match=MatchValue(value=file_name)
+                        )
+                    ]
+                ),
+                limit=10000,  # Limite alto per file grandi
+                with_payload=True,
+                with_vectors=False
+            )
+
+            points = scroll_result[0]
+            total_chunks = len(points)
+
+            if total_chunks == 0:
+                return {
+                    "file_name": file_name,
+                    "total_chunks": 0,
+                    "estimated_pages": 0,
+                    "recommended_topk": 20
+                }
+
+            # Calcola statistiche
+            total_chars = sum(len(p.payload.get("text", "")) for p in points)
+            avg_chunk_size = total_chars / total_chunks if total_chunks > 0 else 0
+
+            # Stima pagine (assumendo ~2000 char per pagina)
+            estimated_pages = total_chars / 2000
+
+            # Raccomandazione TOP_K
+            # Euristica: per recuperare ~80% del contenuto di una sezione media
+            # che occupa ~10-15% del documento
+            recommended_topk = max(20, min(200, int(total_chunks * 0.3)))
+
+            return {
+                "file_name": file_name,
+                "total_chunks": total_chunks,
+                "total_chars": total_chars,
+                "avg_chunk_size": int(avg_chunk_size),
+                "estimated_pages": int(estimated_pages),
+                "recommended_topk": recommended_topk,
+                "recommended_topk_ranges": {
+                    "query_semplice": max(10, int(total_chunks * 0.1)),
+                    "sezione_media": max(20, int(total_chunks * 0.2)),
+                    "sezione_grande": max(50, int(total_chunks * 0.4)),
+                    "documento_completo": min(200, total_chunks)
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Errore ottenendo stats per {file_name}: {e}")
+            return {
+                "file_name": file_name,
+                "error": str(e),
+                "recommended_topk": 20
+            }
+
+    def estimate_tokens(self, text: str) -> int:
+        """
+        Stima numero di token in un testo.
+        Euristica: 1 token ≈ 4 caratteri (conservativa)
+
+        Args:
+            text: Testo da stimare
+
+        Returns:
+            Numero stimato di token
+        """
+        return len(text) // 4
+
+    def suggest_topk(
+        self,
+        query: str,
+        filter_by_file: Optional[str] = None,
+        max_context_tokens: int = 150000  # Limite sicuro sotto i 200k
+    ) -> int:
+        """
+        Suggerisce TOP_K ottimale basato su query, file e limite token.
+
+        Args:
+            query: Query dell'utente
+            filter_by_file: File filtrato (se presente)
+            max_context_tokens: Limite massimo token per contesto
+
+        Returns:
+            TOP_K suggerito
+        """
+        # Parole chiave che indicano richieste complete/lunghe
+        complete_keywords = [
+            "tutti", "completo", "intero", "elenco", "lista",
+            "elenca", "per intero", "dall'inizio alla fine",
+            "senza omettere", "completamente"
+        ]
+
+        query_lower = query.lower()
+        is_complete_request = any(kw in query_lower for kw in complete_keywords)
+
+        # Se c'è filtro file, usa statistiche del file
+        if filter_by_file:
+            stats = self.get_file_stats(filter_by_file)
+
+            if is_complete_request:
+                # Richiesta completa -> usa 40-60% dei chunk
+                suggested = stats["recommended_topk_ranges"]["sezione_grande"]
+            else:
+                # Query normale -> usa 20-30% dei chunk
+                suggested = stats["recommended_topk_ranges"]["sezione_media"]
+
+            # NUOVO: Calcola token stimati e cap se necessario
+            avg_chunk_tokens = stats["avg_chunk_size"] // 4  # ~250 token per chunk medio
+            estimated_total_tokens = suggested * avg_chunk_tokens
+
+            if estimated_total_tokens > max_context_tokens:
+                # Calcola TOP_K massimo che rispetta limite token
+                max_topk = max_context_tokens // avg_chunk_tokens
+                original_suggested = suggested
+                suggested = min(suggested, max_topk)
+
+                logger.warning(
+                    f"TOP_K limitato per token: {original_suggested} -> {suggested} "
+                    f"(stimato {estimated_total_tokens:,} token > limite {max_context_tokens:,})"
+                )
+
+            logger.info(
+                f"TOP_K suggerito: {suggested} (file ha {stats['total_chunks']} chunk, "
+                f"~{suggested * avg_chunk_tokens:,} token)"
+            )
+            return suggested
+
+        # Senza filtro file, usa euristica base
+        if is_complete_request:
+            return 50
+        else:
+            return 20
+
+    def list_files_in_collection(self) -> List[str]:
+        """
+        Lista tutti i file distinti nella collection.
+
+        Returns:
+            Lista di nomi file
+        """
+        # Query un piccolo set di risultati per ottenere i file
+        try:
+            # Usa una query generica per ottenere documenti
+            dummy_query = "documento"
+            results = self.retrieve(dummy_query, top_k=100)
+
+            files = set()
+            for result in results:
+                file_name = result.get("metadata", {}).get("file_name", "")
+                if file_name:
+                    files.add(file_name)
+
+            return sorted(list(files))
+
+        except Exception as e:
+            logger.error(f"Errore listando file: {e}")
+            return []
 
     def _generate_query_embedding(self, query: str) -> List[float]:
         """
@@ -124,6 +425,7 @@ class RetrievalPipeline:
         results: List[Dict],
         include_metadata: bool = True,
         max_context_length: Optional[int] = None,
+        max_context_tokens: Optional[int] = None,
     ) -> str:
         """
         Formatta risultati di retrieval come context per LLM.
@@ -131,7 +433,8 @@ class RetrievalPipeline:
         Args:
             results: Risultati di retrieval
             include_metadata: Se True, include metadata (URL, titolo)
-            max_context_length: Lunghezza massima context (opzionale)
+            max_context_length: Lunghezza massima in caratteri (opzionale)
+            max_context_tokens: Lunghezza massima in token (opzionale)
 
         Returns:
             Context formattato come stringa
@@ -140,30 +443,77 @@ class RetrievalPipeline:
             return "Nessun contesto rilevante trovato."
 
         context_parts = []
+        total_chars = 0
+        total_tokens_estimate = 0
+        truncated_at = None
 
         for i, result in enumerate(results, 1):
             part = f"[Documento {i}]"
 
             if include_metadata:
-                url = result.get("url", "")
-                title = result.get("page_title", "")
+                metadata = result.get("metadata", {})
 
-                if title:
+                # Metadata per documenti locali
+                file_name = metadata.get("file_name", "")
+                file_type = metadata.get("file_type", "")
+                source = metadata.get("source", "")
+
+                # Metadata per web crawling
+                url = result.get("url", metadata.get("url", ""))
+                title = result.get("page_title", metadata.get("page_title", ""))
+
+                # Priorità: mostra file_name se è un documento, altrimenti URL/titolo
+                if file_name:
+                    part += f"\nFile: {file_name}"
+                    if file_type:
+                        part += f" (tipo: {file_type})"
+                elif title:
                     part += f"\nTitolo: {title}"
+
                 if url:
                     part += f"\nURL: {url}"
+                elif source:
+                    part += f"\nPercorso: {source}"
 
                 score = result.get("score", 0)
                 part += f"\nRilevanza: {score:.3f}"
 
             part += f"\n\n{result['text']}\n"
+
+            # Check limiti PRIMA di aggiungere
+            part_chars = len(part)
+            part_tokens = self.estimate_tokens(part)
+
+            # Check limite token (priorità)
+            if max_context_tokens and (total_tokens_estimate + part_tokens) > max_context_tokens:
+                truncated_at = i
+                logger.warning(
+                    f"Context troncato a {i-1}/{len(results)} documenti "
+                    f"(~{total_tokens_estimate:,} token, limite {max_context_tokens:,})"
+                )
+                break
+
+            # Check limite caratteri
+            if max_context_length and (total_chars + part_chars) > max_context_length:
+                truncated_at = i
+                logger.warning(
+                    f"Context troncato a {i-1}/{len(results)} documenti "
+                    f"({total_chars:,} caratteri, limite {max_context_length:,})"
+                )
+                break
+
             context_parts.append(part)
+            total_chars += part_chars
+            total_tokens_estimate += part_tokens
 
         context = "\n---\n".join(context_parts)
 
-        # Limita lunghezza se richiesto
-        if max_context_length and len(context) > max_context_length:
-            context = context[:max_context_length] + "\n\n[Context troncato...]"
+        # Aggiungi nota se troncato
+        if truncated_at:
+            context += f"\n\n[NOTA: Contesto limitato a {len(context_parts)}/{len(results)} documenti per limiti di token. "
+            context += f"Documenti inclusi hanno i punteggi di rilevanza più alti.]"
+
+        logger.info(f"Context finale: {len(context_parts)} documenti, ~{total_tokens_estimate:,} token stimati")
 
         return context
 
@@ -181,16 +531,36 @@ class RetrievalPipeline:
             return "Nessuna fonte disponibile."
 
         sources = []
-        seen_urls = set()
+        seen_sources = set()
 
         for result in results:
-            url = result.get("url", "")
-            if url and url not in seen_urls:
-                title = result.get("page_title", url)
-                sources.append(f"- {title}\n  {url}")
-                seen_urls.add(url)
+            metadata = result.get("metadata", {})
 
-        return "\n".join(sources)
+            # Per documenti locali
+            file_name = metadata.get("file_name", "")
+            source = metadata.get("source", "")
+
+            # Per web crawling
+            url = result.get("url", metadata.get("url", ""))
+            title = result.get("page_title", metadata.get("page_title", ""))
+
+            # Crea identificatore unico per la fonte
+            if file_name:
+                source_id = file_name
+                if source_id not in seen_sources:
+                    source_str = f"- {file_name}"
+                    if source:
+                        source_str += f"\n  Percorso: {source}"
+                    sources.append(source_str)
+                    seen_sources.add(source_id)
+            elif url:
+                source_id = url
+                if source_id not in seen_sources:
+                    display_title = title if title else url
+                    sources.append(f"- {display_title}\n  {url}")
+                    seen_sources.add(source_id)
+
+        return "\n".join(sources) if sources else "Nessuna fonte disponibile."
 
     def get_collection_info(self) -> Dict:
         """

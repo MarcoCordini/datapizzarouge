@@ -9,6 +9,7 @@ from anthropic import Anthropic
 
 import config
 from rag.retrieval_pipeline import RetrievalPipeline
+from storage.image_manager import ImageManager
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class ChatInterface:
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_k_retrieval: Optional[int] = None,
+        use_diverse_retrieval: bool = False,
     ):
         """
         Inizializza ChatInterface.
@@ -39,6 +41,7 @@ class ChatInterface:
             max_tokens: Max tokens risposta (default: config)
             temperature: Temperature (default: config)
             top_k_retrieval: Top-K retrieval (default: config)
+            use_diverse_retrieval: Se True, usa retrieval diversificato (default: False)
         """
         self.collection_name = collection_name
         self.anthropic_api_key = anthropic_api_key or config.ANTHROPIC_API_KEY
@@ -47,6 +50,9 @@ class ChatInterface:
         self.max_tokens = max_tokens or config.LLM_MAX_TOKENS
         self.temperature = temperature or config.LLM_TEMPERATURE
         self.top_k_retrieval = top_k_retrieval or config.TOP_K_RETRIEVAL
+        self.use_diverse_retrieval = use_diverse_retrieval
+        self.filter_by_file: Optional[str] = None  # Filtro file attivo
+        self.auto_topk: bool = True  # TOP_K automatico abilitato di default
 
         # Inizializza retrieval pipeline
         self.retrieval = RetrievalPipeline(
@@ -54,6 +60,9 @@ class ChatInterface:
             openai_api_key=self.openai_api_key,
             top_k=self.top_k_retrieval,
         )
+
+        # Image manager
+        self.image_manager = ImageManager()
 
         # Client Anthropic
         self.anthropic_client = Anthropic(api_key=self.anthropic_api_key)
@@ -84,13 +93,37 @@ class ChatInterface:
             return {"response": "Per favore inserisci una domanda.", "sources": []}
 
         try:
-            # Retrieval context
-            retrieval_results = self.retrieval.retrieve(user_message)
+            # Determina TOP_K da usare
+            topk_to_use = self.top_k_retrieval
+
+            if self.auto_topk:
+                # Suggerisci TOP_K ottimale
+                suggested_topk = self.retrieval.suggest_topk(
+                    user_message,
+                    filter_by_file=self.filter_by_file
+                )
+
+                if suggested_topk != topk_to_use:
+                    logger.info(f"TOP_K automatico: {topk_to_use} -> {suggested_topk}")
+                    topk_to_use = suggested_topk
+
+            # Retrieval context con opzioni
+            if self.use_diverse_retrieval:
+                retrieval_results = self.retrieval.retrieve_diverse(user_message, top_k=topk_to_use)
+            else:
+                retrieval_results = self.retrieval.retrieve(
+                    user_message,
+                    top_k=topk_to_use,
+                    filter_by_file=self.filter_by_file
+                )
             self.last_retrieval_results = retrieval_results
 
-            # Formatta context
+            # Formatta context con limite token
+            # Limite: 150k per context + 50k per system prompt e risposta = 200k totale
             context = self.retrieval.format_context(
-                retrieval_results, include_metadata=True
+                retrieval_results,
+                include_metadata=True,
+                max_context_tokens=150000  # Limite sicuro
             )
 
             # Costruisci system prompt con context
@@ -129,9 +162,13 @@ class ChatInterface:
             # Formatta fonti
             sources = self.retrieval.format_sources(retrieval_results)
 
+            # Estrai immagini dai risultati
+            images = self._extract_images_from_results(retrieval_results)
+
             return {
                 "response": assistant_message,
                 "sources": sources,
+                "images": images,  # Lista path immagini
                 "num_results": len(retrieval_results),
                 "tokens_used": response.usage.input_tokens + response.usage.output_tokens,
             }
@@ -154,21 +191,70 @@ class ChatInterface:
         Returns:
             System prompt
         """
-        return f"""Sei un assistente AI che risponde a domande basandoti esclusivamente sul contesto fornito.
+        return f"""Sei un assistente AI specializzato nell'analisi di documenti e siti web. Rispondi basandoti ESCLUSIVAMENTE sul contesto fornito.
 
-Il contesto proviene da un crawl di un sito web e contiene informazioni rilevanti per la domanda dell'utente.
+Il contesto contiene frammenti di documenti (PDF, Word, etc.) o pagine web rilevanti per la domanda dell'utente.
 
-REGOLE IMPORTANTI:
-1. Rispondi SOLO basandoti sul contesto fornito
-2. Se il contesto non contiene informazioni sufficienti, dillo chiaramente
-3. Cita le fonti quando possibile (menziona i documenti specifici)
-4. Sii conciso ma completo
-5. Se ci sono informazioni contraddittorie, segnalalo
+REGOLE CRITICHE - SEGUI RIGOROSAMENTE:
+1. **RISPONDI SOLO CON INFORMAZIONI PRESENTI NEL CONTESTO**: Se una informazione non è nel contesto fornito, devi dire esplicitamente "Il contesto fornito non contiene queste informazioni" o "Non ho trovato informazioni su questo argomento nel contesto disponibile".
 
-CONTESTO:
+2. **NON INVENTARE, NON DEDURRE, NON AGGIUNGERE**: Non fare deduzioni, non aggiungere informazioni da conoscenze pregresse, non inventare dettagli. Solo ciò che è scritto esplicitamente nel contesto.
+
+3. **CITA SEMPRE LE FONTI**: Quando rispondi, indica da quale documento/i proviene l'informazione (es: "Secondo il documento [Documento 1] - Disciplinari_A_B.pdf...").
+
+4. **VERIFICA LA RILEVANZA**: Prima di rispondere, verifica che i documenti nel contesto siano effettivamente rilevanti per la domanda. Se i documenti parlano di argomenti diversi da quello richiesto, dillo chiaramente.
+
+5. **SEGNALA INFORMAZIONI INCOMPLETE**: Se il contesto contiene solo informazioni parziali sull'argomento, spiega cosa è presente e cosa manca.
+
+6. **SEGNALA CONTRADDIZIONI**: Se ci sono informazioni contraddittorie tra i documenti, evidenzialo.
+
+CONTESTO DISPONIBILE:
 {context}
 
-Rispondi alle domande dell'utente basandoti esclusivamente su questo contesto."""
+===
+
+Ora rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE su questo contesto. Ricorda: se l'informazione non è nel contesto, dillo chiaramente invece di rispondere."""
+
+    def _extract_images_from_results(self, retrieval_results: List[Dict]) -> List[Dict]:
+        """
+        Estrae immagini dai risultati del retrieval.
+
+        Args:
+            retrieval_results: Lista risultati retrieval con metadata
+
+        Returns:
+            Lista di dict con informazioni immagini: [{
+                "path": "collection/doc/img_001.png",
+                "absolute_path": "/full/path/to/img_001.png",
+                "source_doc": "MyDocument.docx"
+            }]
+        """
+        seen_images = set()  # Per evitare duplicati
+        images = []
+
+        for result in retrieval_results:
+            metadata = result.get("metadata", {})
+
+            # Controlla se ci sono immagini nei metadata
+            document_images = metadata.get("document_images", [])
+
+            for img_info in document_images:
+                img_path = img_info.get("path")
+                if img_path and img_path not in seen_images:
+                    seen_images.add(img_path)
+
+                    # Ottieni path assoluto
+                    abs_path = self.image_manager.get_image_path(img_path)
+
+                    if abs_path and abs_path.exists():
+                        images.append({
+                            "path": img_path,
+                            "absolute_path": str(abs_path),
+                            "source_doc": metadata.get("file_name", "Unknown")
+                        })
+
+        logger.info(f"Estratte {len(images)} immagini uniche dai risultati")
+        return images
 
     def clear_history(self):
         """Pulisce la cronologia conversazione."""
@@ -186,6 +272,28 @@ Rispondi alle domande dell'utente basandoti esclusivamente su questo contesto.""
             return "Nessuna fonte disponibile."
 
         return self.retrieval.format_sources(self.last_retrieval_results)
+
+    def set_file_filter(self, file_name: Optional[str]):
+        """
+        Imposta filtro per file specifico.
+
+        Args:
+            file_name: Nome file da filtrare (None per rimuovere filtro)
+        """
+        self.filter_by_file = file_name
+        if file_name:
+            logger.info(f"Filtro file attivo: {file_name}")
+        else:
+            logger.info("Filtro file rimosso")
+
+    def list_available_files(self) -> List[str]:
+        """
+        Lista file disponibili nella collection.
+
+        Returns:
+            Lista nomi file
+        """
+        return self.retrieval.list_files_in_collection()
 
     def get_collection_info(self) -> Dict:
         """
@@ -214,6 +322,12 @@ Rispondi alle domande dell'utente basandoti esclusivamente su questo contesto.""
         print("  /clear            - Pulisci cronologia conversazione")
         print("  /sources          - Mostra fonti ultima risposta")
         print("  /info             - Info collection")
+        print("  /files            - Lista file disponibili")
+        print("  /fileinfo <nome>  - Statistiche dettagliate file")
+        print("  /filter <nome>    - Filtra risultati per file specifico")
+        print("  /nofilter         - Rimuovi filtro file")
+        print("  /topk <numero>    - Cambia numero risultati")
+        print("  /auto             - Abilita TOP_K automatico (consigliato)")
         print("\nDigita la tua domanda e premi Enter...")
         print("=" * 60)
 
@@ -232,7 +346,7 @@ Rispondi alle domande dell'utente basandoti esclusivamente su questo contesto.""
 
                 elif user_input.lower() == "/clear":
                     self.clear_history()
-                    print("✓ Cronologia pulita")
+                    print("Cronologia pulita")
                     continue
 
                 elif user_input.lower() == "/sources":
@@ -247,7 +361,97 @@ Rispondi alle domande dell'utente basandoti esclusivamente su questo contesto.""
                     print(f"  Punti: {info['points_count']}")
                     print(f"  Vector size: {info['vector_size']}")
                     print(f"  Distance: {info['distance']}")
+                    if self.filter_by_file:
+                        print(f"  Filtro attivo: {self.filter_by_file}")
                     continue
+
+                elif user_input.lower() == "/files":
+                    print("\n\033[1;33mFile disponibili:\033[0m")
+                    files = self.list_available_files()
+                    if files:
+                        for i, file_name in enumerate(files, 1):
+                            marker = " [FILTRATO]" if file_name == self.filter_by_file else ""
+                            print(f"  {i}. {file_name}{marker}")
+                    else:
+                        print("  Nessun file trovato")
+                    continue
+
+                elif user_input.lower().startswith("/filter "):
+                    file_name = user_input[8:].strip()
+                    self.set_file_filter(file_name)
+                    print(f"Filtro attivo per: {file_name}")
+                    print("Le query cercheranno SOLO in questo file.")
+                    continue
+
+                elif user_input.lower() == "/nofilter":
+                    self.set_file_filter(None)
+                    print("Filtro file rimosso. Cerchero' in tutti i documenti.")
+                    continue
+
+                elif user_input.lower() == "/auto":
+                    self.auto_topk = not self.auto_topk
+                    status = "abilitato" if self.auto_topk else "disabilitato"
+                    print(f"TOP_K automatico {status}")
+                    if self.auto_topk:
+                        print("Il sistema calcolera' automaticamente TOP_K ottimale per ogni query")
+                    else:
+                        print(f"Verra' usato TOP_K fisso: {self.top_k_retrieval}")
+                    continue
+
+                elif user_input.lower().startswith("/fileinfo "):
+                    file_name = user_input[10:].strip()
+                    print(f"\n\033[1;33mStatistiche file: {file_name}\033[0m")
+                    stats = self.retrieval.get_file_stats(file_name)
+
+                    if "error" in stats:
+                        print(f"Errore: {stats['error']}")
+                    else:
+                        print(f"  Total chunk: {stats['total_chunks']}")
+                        print(f"  Pagine stimate: {stats['estimated_pages']}")
+                        print(f"  Dimensione media chunk: {stats['avg_chunk_size']} caratteri")
+
+                        # Calcola token stimati
+                        avg_tokens = stats['avg_chunk_size'] // 4
+                        print(f"  Token medi per chunk: ~{avg_tokens}")
+
+                        print(f"\n  TOP_K raccomandati (con stima token):")
+                        for tipo, topk in stats['recommended_topk_ranges'].items():
+                            tipo_label = {
+                                "query_semplice": "Query semplice",
+                                "sezione_media": "Sezione media",
+                                "sezione_grande": "Sezione grande",
+                                "documento_completo": "Documento completo"
+                            }.get(tipo, tipo)
+
+                            estimated_tokens = topk * avg_tokens
+                            warning = ""
+                            if estimated_tokens > 150000:
+                                warning = " [!] SUPERA LIMITE TOKEN"
+                                # Calcola topk sicuro
+                                safe_topk = 150000 // avg_tokens
+                                warning += f" -> usa max {safe_topk}"
+
+                            print(f"    {tipo_label}: {topk} (~{estimated_tokens:,} token){warning}")
+
+                        print(f"\n  Limite token contesto: 150,000")
+                        print(f"  Limite totale Claude: 200,000")
+                    continue
+
+                elif user_input.lower().startswith("/topk "):
+                    try:
+                        new_topk = int(user_input[6:].strip())
+                        if new_topk < 1 or new_topk > 200:
+                            print("TOP_K deve essere tra 1 e 200")
+                            continue
+                        self.top_k_retrieval = new_topk
+                        self.retrieval.top_k = new_topk
+                        self.auto_topk = False  # Disabilita auto quando imposti manualmente
+                        print(f"TOP_K impostato manualmente a {new_topk}")
+                        print("(TOP_K automatico disabilitato. Usa /auto per riabilitarlo)")
+                        continue
+                    except ValueError:
+                        print("Formato non valido. Usa: /topk <numero>")
+                        continue
 
                 # Processa query
                 result = self.chat(user_input)
@@ -267,6 +471,13 @@ Rispondi alle domande dell'utente basandoti esclusivamente su questo contesto.""
                 if result["sources"]:
                     print(f"\n\033[2;33mFonti:\033[0m")
                     print(f"\033[2m{result['sources']}\033[0m")
+
+                # Mostra immagini se presenti
+                if result.get("images"):
+                    print(f"\n\033[1;35mImmagini associate:\033[0m")
+                    for i, img in enumerate(result["images"], 1):
+                        print(f"  {i}. {img['absolute_path']}")
+                        print(f"     (da: {img['source_doc']})")
 
             except KeyboardInterrupt:
                 print("\n\nInterrotto. Usa /quit per uscire.")

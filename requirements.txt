@@ -20,3 +20,14 @@ click==8.1.7
 # API Server
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+
+# Document Processing
+PyMuPDF>=1.24.0          # PDF processing (fitz) - use >=1.24 for precompiled wheels on Windows
+pdfplumber>=0.10.0       # Alternative PDF processor with better table support
+python-docx>=1.1.0       # Word DOCX files
+python-pptx>=0.6.23      # PowerPoint PPTX files
+openpyxl>=3.1.0          # Excel XLSX files
+Pillow>=10.0.0           # Image processing
+easyocr>=1.7.0           # OCR engine (more accurate than Tesseract)
+markdown>=3.5.0          # Markdown processing
+filetype>=1.2.0          # Auto-detect file types

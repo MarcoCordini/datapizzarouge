@@ -11,8 +11,10 @@ from openai import OpenAI
 import config
 from storage.raw_data_store import RawDataStore
 from storage.vector_store_manager import VectorStoreManager
+from storage.image_manager import ImageManager
 from processors.html_cleaner import HTMLCleaner
 from processors.content_chunker import ContentChunker
+from processors.document_loaders import DocumentBatchLoader
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,7 @@ class IngestionPipeline:
         # Inizializza componenti
         self.raw_store = RawDataStore()
         self.vector_store = VectorStoreManager()
+        self.image_manager = ImageManager()
         self.html_cleaner = HTMLCleaner(preserve_structure=True)
         self.chunker = ContentChunker(
             chunk_size=self.chunk_size, overlap=self.chunk_overlap
@@ -262,6 +265,182 @@ class IngestionPipeline:
             Dict con statistiche
         """
         return self.raw_store.get_domain_stats(domain)
+
+    def process_documents(
+        self,
+        documents_dir: str,
+        collection_name: str,
+        force_recreate: bool = False,
+        recursive: bool = True,
+        extensions: Optional[List[str]] = None
+    ) -> Dict:
+        """
+        Processa documenti locali (PDF, Word, etc.) e crea vector store.
+
+        Args:
+            documents_dir: Directory con documenti
+            collection_name: Nome collection Qdrant
+            force_recreate: Se True, ricrea collection se esiste
+            recursive: Cerca documenti in subdirectory
+            extensions: Lista estensioni da processare
+
+        Returns:
+            Dict con statistiche del processo
+        """
+        logger.info(f"Ingestion documenti da: {documents_dir}")
+
+        # 1. Carica documenti
+        batch_loader = DocumentBatchLoader(ocr_language="it+en")
+        documents = batch_loader.load_directory(
+            documents_dir,
+            recursive=recursive,
+            extensions=extensions
+        )
+
+        if not documents:
+            logger.warning("Nessun documento trovato!")
+            return {
+                "documents_dir": documents_dir,
+                "collection_name": collection_name,
+                "documents_processed": 0,
+                "documents_failed": 0,
+                "chunks_created": 0,
+                "chunks_inserted": 0,
+            }
+
+        logger.info(f"Caricati {len(documents)} documenti")
+
+        # 2. Prepara collection
+        logger.info(f"Creazione collection: {collection_name}")
+        self.vector_store.create_collection(
+            collection_name=collection_name,
+            vector_size=config.EMBEDDING_DIMENSIONS,
+            force_recreate=force_recreate
+        )
+
+        # Statistiche
+        stats = {
+            "documents_dir": documents_dir,
+            "collection_name": collection_name,
+            "documents_processed": 0,
+            "documents_failed": 0,
+            "chunks_created": 0,
+            "chunks_inserted": 0,
+        }
+
+        # 3. Process e chunking
+        all_chunks = []
+        for doc in tqdm(documents, desc="Processing documenti"):
+            try:
+                # Pulisci testo (rimuovi whitespace multipli, etc.)
+                cleaned_text = self._clean_text(doc["text"])
+
+                if not cleaned_text or len(cleaned_text.split()) < 50:
+                    logger.debug(f"Contenuto insufficiente per {doc['metadata']['file_name']}")
+                    stats["documents_failed"] += 1
+                    continue
+
+                # Salva immagini se presenti
+                saved_images = []
+                if "images" in doc["metadata"] and doc["metadata"]["images"]:
+                    logger.info(f"Salvataggio {len(doc['metadata']['images'])} immagini da {doc['metadata']['file_name']}")
+                    saved_images = self.image_manager.save_document_images(
+                        collection_name=collection_name,
+                        document_name=doc['metadata']['file_name'],
+                        images=doc['metadata']['images']
+                    )
+
+                # Chunking
+                chunks = self.chunker.chunk_text(
+                    text=cleaned_text,
+                    metadata={
+                        **doc["metadata"],
+                        "chunk_strategy": "semantic"
+                    }
+                )
+
+                # Associa immagini ai chunk (se presenti)
+                if saved_images:
+                    chunks = self._associate_images_to_chunks(chunks, saved_images)
+
+                all_chunks.extend(chunks)
+                stats["documents_processed"] += 1
+                stats["chunks_created"] += len(chunks)
+
+            except Exception as e:
+                logger.error(f"Errore processando {doc['metadata'].get('file_name')}: {e}")
+                stats["documents_failed"] += 1
+                continue
+
+        logger.info(f"Totale chunks: {len(all_chunks)}")
+
+        # 4. Genera embeddings e inserisci
+        if all_chunks:
+            logger.info("Generazione embeddings...")
+            embeddings = self._generate_embeddings(all_chunks)
+
+            logger.info("Inserimento in vector store...")
+            inserted = self.vector_store.insert_chunks(
+                collection_name=collection_name,
+                chunks=all_chunks,
+                embeddings=embeddings,
+            )
+
+            stats["chunks_inserted"] = inserted
+
+        logger.info(f"Ingestion completata: {collection_name}")
+        logger.info(f"Statistiche: {stats}")
+
+        return stats
+
+    def _associate_images_to_chunks(self, chunks: List[Dict], saved_images: List[Dict]) -> List[Dict]:
+        """
+        Associa immagini salvate ai chunk corretti.
+
+        Per ora, tutte le immagini del documento sono aggiunte a tutti i chunk
+        dello stesso documento. In futuro si può raffinare per associare immagini
+        specifiche a chunk specifici basandosi sul paragraph_index.
+
+        Args:
+            chunks: Lista di chunk dal documento
+            saved_images: Lista di immagini salvate con informazioni
+
+        Returns:
+            Lista di chunk con immagini aggiunte nei metadata
+        """
+        if not saved_images:
+            return chunks
+
+        # Prepara lista semplificata di immagini per metadata
+        image_refs = []
+        for img in saved_images:
+            image_refs.append({
+                "path": img["relative_path"],
+                "paragraph_index": img.get("paragraph_index", -1),
+                "text_before": img.get("text_before", "")[:100]  # Primi 100 caratteri
+            })
+
+        # Aggiungi riferimenti immagini a tutti i chunk del documento
+        # (in futuro: logica più sofisticata per associare immagini specifiche a chunk specifici)
+        for chunk in chunks:
+            if "metadata" not in chunk:
+                chunk["metadata"] = {}
+            chunk["metadata"]["document_images"] = image_refs
+
+        logger.debug(f"Associate {len(image_refs)} immagini a {len(chunks)} chunks")
+        return chunks
+
+    def _clean_text(self, text: str) -> str:
+        """Pulizia testo da documenti."""
+        import re
+
+        # Rimuovi whitespace multipli
+        text = re.sub(r'\s+', ' ', text)
+
+        # Rimuovi righe vuote multiple
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+
+        return text.strip()
 
 
 def create_pipeline(

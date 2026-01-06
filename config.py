@@ -33,7 +33,7 @@ DEPTH_LIMIT = int(os.getenv("DEPTH_LIMIT", "10"))
 # === RAG SETTINGS ===
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
-TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "5"))
+TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "20"))  # Aumentato da 5 a 20 per documenti grandi
 
 # === EMBEDDING SETTINGS ===
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
@@ -46,10 +46,12 @@ LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096"))
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
 
 # === STORAGE PATHS ===
+DATA_PATH = Path(os.getenv("DATA_PATH", BASE_DIR / "data"))
 RAW_DATA_PATH = Path(os.getenv("RAW_DATA_PATH", BASE_DIR / "data" / "raw"))
 QDRANT_DATA_PATH = Path(os.getenv("QDRANT_DATA_PATH", BASE_DIR / "data" / "qdrant"))
 
 # Crea le directory se non esistono
+DATA_PATH.mkdir(parents=True, exist_ok=True)
 RAW_DATA_PATH.mkdir(parents=True, exist_ok=True)
 QDRANT_DATA_PATH.mkdir(parents=True, exist_ok=True)
 

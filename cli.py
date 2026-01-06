@@ -247,6 +247,105 @@ def ingest(domain, collection, max_pages, force):
         sys.exit(1)
 
 
+@cli.command("ingest-docs")
+@click.option(
+    "--dir",
+    "-d",
+    required=True,
+    help="Directory con documenti (PDF, Word, etc.)"
+)
+@click.option(
+    "--collection",
+    "-c",
+    required=True,
+    help="Nome collection Qdrant"
+)
+@click.option(
+    "--recursive/--no-recursive",
+    default=True,
+    help="Cerca documenti in subdirectory"
+)
+@click.option(
+    "--force",
+    "-f",
+    is_flag=True,
+    help="Forza ricreazione collection se esiste"
+)
+@click.option(
+    "--extensions",
+    "-e",
+    multiple=True,
+    help="Estensioni da processare (es: -e .pdf -e .docx)"
+)
+def ingest_docs(dir, collection, recursive, force, extensions):
+    """
+    Ingestion documenti locali (PDF, Word, Excel, PowerPoint, Immagini).
+
+    Esempi:
+
+        # Processa tutti i PDF in una directory
+        python cli.py ingest-docs --dir ./documents --collection my_docs
+
+        # Solo PDF e Word
+        python cli.py ingest-docs --dir ./docs --collection my_docs -e .pdf -e .docx
+
+        # Forza ricreazione
+        python cli.py ingest-docs --dir ./docs --collection my_docs --force
+    """
+    click.echo(f"\n{'='*60}")
+    click.echo("  INGESTION DOCUMENTI")
+    click.echo(f"{'='*60}")
+    click.echo(f"Directory: {dir}")
+    click.echo(f"Collection: {collection}")
+    click.echo(f"Ricorsivo: {recursive}")
+    if force:
+        click.echo(f"ATTENZIONE: Collection esistente verra' sovrascritta!")
+    if extensions:
+        click.echo(f"Estensioni: {', '.join(extensions)}")
+    click.echo(f"{'='*60}\n")
+
+    # Converti extensions da tuple a list
+    extensions_list = list(extensions) if extensions else None
+
+    # Conferma
+    if not click.confirm("Procedere con ingestion documenti?"):
+        click.echo("Operazione annullata.")
+        sys.exit(0)
+
+    # Pipeline
+    try:
+        pipeline = IngestionPipeline()
+
+        click.echo("\n🔄 Processing in corso...\n")
+
+        result = pipeline.process_documents(
+            documents_dir=dir,
+            collection_name=collection,
+            force_recreate=force,
+            recursive=recursive,
+            extensions=extensions_list
+        )
+
+        # Mostra risultati
+        click.echo(f"\n{'='*60}")
+        click.echo("  RISULTATI")
+        click.echo(f"{'='*60}")
+        click.echo(f"✓ Ingestion completata!")
+        click.echo(f"\nCollection: {result['collection_name']}")
+        click.echo(f"Documenti processati: {result['documents_processed']}")
+        click.echo(f"Documenti falliti: {result['documents_failed']}")
+        click.echo(f"Chunk creati: {result['chunks_created']}")
+        click.echo(f"Chunk inseriti: {result['chunks_inserted']}")
+
+        click.echo(f"\nProssimo passo:")
+        click.echo(f"  python cli.py chat --collection {collection}")
+
+    except Exception as e:
+        click.echo(f"\n❌ Errore: {e}", err=True)
+        logger.exception("Errore durante ingestion documenti")
+        sys.exit(1)
+
+
 @cli.command()
 @click.option(
     "--collection",

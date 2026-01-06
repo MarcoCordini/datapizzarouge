@@ -151,11 +151,28 @@ class VectorStoreManager:
                         "word_count": chunk.get("word_count", 0),
                     }
 
-                    # Aggiungi metadata extra se presenti
+                    # Aggiungi metadata extra se presenti (web crawling)
                     if "crawled_at" in chunk:
                         payload["crawled_at"] = chunk["crawled_at"]
                     if "domain" in chunk:
                         payload["domain"] = chunk["domain"]
+
+                    # Aggiungi metadata da documenti
+                    if "file_name" in chunk:
+                        payload["file_name"] = chunk["file_name"]
+                    if "file_type" in chunk:
+                        payload["file_type"] = chunk["file_type"]
+                    if "source" in chunk:
+                        payload["source"] = chunk["source"]
+                    if "pages" in chunk:
+                        payload["pages"] = chunk["pages"]
+                    if "extraction_method" in chunk:
+                        payload["extraction_method"] = chunk["extraction_method"]
+
+                    # Aggiungi riferimenti immagini se presenti (da metadata nidificati)
+                    metadata = chunk.get("metadata", {})
+                    if "document_images" in metadata:
+                        payload["document_images"] = metadata["document_images"]
 
                     point = PointStruct(id=point_id, vector=embedding, payload=payload)
                     points.append(point)

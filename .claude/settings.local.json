@@ -9,7 +9,8 @@
       "Bash(move crawlerscrapy.cfg scrapy.cfg)",
       "Bash(python:*)",
       "Bash(findstr:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(dir \"D:\\\\Almapro-tfs\\\\Febo-Gemelli\\\\temp\\\\doc2 smeup\" /b)"
     ]
   }
 }
