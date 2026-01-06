@@ -7,11 +7,11 @@ Type=notify
 User=administrator
 Group=administrator
 WorkingDirectory=/home/administrator/rag_tools/datapizzarouge
-Environment="PATH=/home/administrator/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=/home/administrator/rag_tools/datapizzarouge/venv/bin:/usr/local/bin:/usr/bin:/bin"
 EnvironmentFile=/home/administrator/rag_tools/datapizzarouge/.env
 
-# Gunicorn command
-ExecStart=/home/administrator/.local/bin/gunicorn api:app -c gunicorn_config.py
+# Gunicorn command (usa venv)
+ExecStart=/home/administrator/rag_tools/datapizzarouge/venv/bin/gunicorn api:app -c gunicorn_config.py
 
 # Restart policy
 Restart=always

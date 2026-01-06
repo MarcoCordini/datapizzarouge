@@ -22,9 +22,9 @@ ROBOTSTXT_OBEY = True
 # User agent
 USER_AGENT = config.USER_AGENT
 
-# Concurrent requests
-CONCURRENT_REQUESTS = config.CONCURRENT_REQUESTS
-CONCURRENT_REQUESTS_PER_DOMAIN = 8
+# Concurrent requests (ridotte per memoria)
+CONCURRENT_REQUESTS = 8  # Ridotto per usare meno memoria
+CONCURRENT_REQUESTS_PER_DOMAIN = 4  # Ridotto da 8 a 4
 CONCURRENT_REQUESTS_PER_IP = 0
 
 # Download delay (secondi tra richieste allo stesso dominio)
@@ -52,8 +52,11 @@ ITEM_PIPELINES = {
 # === DEPTH SETTINGS ===
 DEPTH_LIMIT = config.DEPTH_LIMIT
 DEPTH_PRIORITY = 1
+
+# Usa disk queue per risparmiare memoria su crawl grandi
 SCHEDULER_DISK_QUEUE = "scrapy.squeues.PickleFifoDiskQueue"
 SCHEDULER_MEMORY_QUEUE = "scrapy.squeues.FifoMemoryQueue"
+SCHEDULER_PRIORITY_QUEUE = "scrapy.pqueues.ScrapyPriorityQueue"
 
 # === LIMITS ===
 # Chiudi spider dopo N item (safety limit)
@@ -64,8 +67,13 @@ DOWNLOAD_TIMEOUT = 30
 
 # === MEMORY USAGE ===
 MEMUSAGE_ENABLED = True
-MEMUSAGE_LIMIT_MB = 512
-MEMUSAGE_WARNING_MB = 384
+MEMUSAGE_LIMIT_MB = 2048  # 2GB limit (aumentato da 512MB)
+MEMUSAGE_WARNING_MB = 1536  # Warning a 1.5GB
+MEMUSAGE_CHECK_INTERVAL_SECONDS = 10  # Check memoria ogni 10 secondi
+
+# Garbage collection aggressivo per liberare memoria
+import gc
+gc.set_threshold(700, 10, 10)  # Più aggressivo del default
 
 # === HTTPCACHE ===
 # Cache per sviluppo (commentare in produzione)
