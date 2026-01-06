@@ -1,0 +1,30 @@
+[Unit]
+Description=DataPizzaRouge API Service
+After=network.target
+
+[Service]
+Type=notify
+User=administrator
+Group=administrator
+WorkingDirectory=/home/administrator/rag_tools/datapizzarouge
+Environment="PATH=/home/administrator/.local/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=/home/administrator/rag_tools/datapizzarouge/.env
+
+# Gunicorn command
+ExecStart=/home/administrator/.local/bin/gunicorn api:app -c gunicorn_config.py
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=datapizzarouge
+
+[Install]
+WantedBy=multi-user.target
