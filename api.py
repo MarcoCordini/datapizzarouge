@@ -35,7 +35,7 @@ app = FastAPI(
     description="API REST per RAG (Retrieval-Augmented Generation) su contenuti web crawlati",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc",
+    redoc_url=None,  # Disabilitato - usa solo Swagger UI
     root_path="/apirag",  # Path prefix per reverse proxy
     swagger_ui_parameters={
         "persistAuthorization": True,
