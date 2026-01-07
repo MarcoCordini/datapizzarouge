@@ -10,7 +10,10 @@
       "Bash(python:*)",
       "Bash(findstr:*)",
       "Bash(cat:*)",
-      "Bash(dir \"D:\\\\Almapro-tfs\\\\Febo-Gemelli\\\\temp\\\\doc2 smeup\" /b)"
+      "Bash(dir \"D:\\\\Almapro-tfs\\\\Febo-Gemelli\\\\temp\\\\doc2 smeup\" /b)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }
