@@ -47,3 +47,4 @@ qdrant_storage/
 # OS
 .DS_Store
 Thumbs.db
+nul

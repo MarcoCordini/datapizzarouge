@@ -1,0 +1,18 @@
+{
+  "collection_name": "enti_pubblici",
+  "max_pages_per_site": 100,
+  "sites": [
+    {
+      "url": "https://www.aranagenzia.it/",
+      "max_pages": 200
+    },
+    {
+      "url": "https://www.governo.it/",
+      "max_pages": 50
+    },
+    {
+      "url": "https://www.inps.it/",
+      "max_pages": 100
+    }
+  ]
+}

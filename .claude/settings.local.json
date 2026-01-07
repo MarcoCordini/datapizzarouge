@@ -13,7 +13,12 @@
       "Bash(dir \"D:\\\\Almapro-tfs\\\\Febo-Gemelli\\\\temp\\\\doc2 smeup\" /b)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "WebFetch(domain:www.aranagenzia.it)",
+      "Bash(scrapy crawl:*)",
+      "Bash(dir:*)",
+      "Bash(if not exist \"D:\\\\Almapro-tfs\\\\Febo-Gemelli\\\\datapizzarouge\\\\scripts\" mkdir \"D:\\\\Almapro-tfs\\\\Febo-Gemelli\\\\datapizzarouge\\\\scripts\")",
+      "Bash(scrapy list:*)"
     ]
   }
 }

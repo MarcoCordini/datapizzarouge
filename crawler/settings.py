@@ -46,8 +46,27 @@ TELNETCONSOLE_ENABLED = False
 
 # === ITEM PIPELINES ===
 ITEM_PIPELINES = {
-    "crawler.pipelines.JsonWriterPipeline": 300,
+    "crawler.pipelines.DomainFilesPipeline": 100,  # Download file organizzati per dominio
+    "crawler.pipelines.DocumentHashPipeline": 200,  # Gestione hash e duplicati
+    "crawler.pipelines.JsonWriterPipeline": 300,  # Salva metadata JSON
+    "crawler.pipelines.StatsCollectorPipeline": 400,  # Statistiche
 }
+
+# === FILES PIPELINE SETTINGS ===
+# Directory dove salvare i file scaricati
+FILES_STORE = "data/documents"
+
+# Scadenza file: 0 = mai (non ri-scaricare file esistenti)
+FILES_EXPIRES = 0
+
+# Dimensione massima file (50 MB)
+FILES_MAX_SIZE = 50 * 1024 * 1024  # 50 MB in bytes
+
+# Formati accettati (FilesPipeline usa il Content-Type)
+# Non serve FILES_RESULT_FIELD perché usiamo il default 'files'
+
+# Timeout per download file
+FILES_DOWNLOAD_TIMEOUT = 180  # 3 minuti per file grandi
 
 # === DEPTH SETTINGS ===
 DEPTH_LIMIT = config.DEPTH_LIMIT

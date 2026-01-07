@@ -1,0 +1,10 @@
+{
+  "collection_name": "test_multi",
+  "max_pages_per_site": 5,
+  "sites": [
+    {
+      "url": "https://www.aranagenzia.it/",
+      "max_pages": 5
+    }
+  ]
+}

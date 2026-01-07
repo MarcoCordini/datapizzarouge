@@ -167,6 +167,7 @@ class IngestionPipeline:
     def _process_page(self, page_data: Dict) -> List[Dict]:
         """
         Processa una singola pagina: cleaning + chunking.
+        Salta documenti (PDF, DOCX, ecc.) che verranno processati separatamente.
 
         Args:
             page_data: Dati raw della pagina
@@ -174,6 +175,12 @@ class IngestionPipeline:
         Returns:
             Lista di chunk
         """
+        # Salta documenti - verranno processati da ingest-docs
+        is_document = page_data.get("metadata", {}).get("is_document", False)
+        if is_document:
+            logger.debug(f"Skipping documento (verrà processato da ingest-docs): {page_data.get('url', '')}")
+            return []
+
         url = page_data.get("url", "")
         html = page_data.get("html", "")
         title = page_data.get("title", "")
